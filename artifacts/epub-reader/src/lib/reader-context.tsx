@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 
 export type ThemeType = 'white' | 'sepia' | 'dark';
+export type PageViewType = 'single' | 'double';
 
 export interface ReaderSettings {
   fontFamily: string;
@@ -8,6 +9,7 @@ export interface ReaderSettings {
   lineHeight: number;
   marginWidth: number;
   theme: ThemeType;
+  pageView: PageViewType;
 }
 
 const defaultSettings: ReaderSettings = {
@@ -16,6 +18,7 @@ const defaultSettings: ReaderSettings = {
   lineHeight: 1.5,
   marginWidth: 20,
   theme: 'white',
+  pageView: 'single',
 };
 
 interface ReaderContextProps {
@@ -37,7 +40,7 @@ export const ReaderProvider = ({ children }: { children: ReactNode }) => {
       try {
         setSettings({ ...defaultSettings, ...JSON.parse(saved) });
       } catch (e) {
-        console.error("Could not parse settings", e);
+        console.error('Could not parse settings', e);
       }
     }
   }, []);
