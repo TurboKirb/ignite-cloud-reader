@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useLocation } from 'wouter';
 import { useReader } from '@/lib/reader-context';
-import ePub, { Book, Rendition, Location } from 'epubjs';
+import ePub, { Rendition, Location } from 'epubjs';
 import {
   Settings2,
   List as ListIcon,
@@ -28,118 +28,115 @@ export default function Reader() {
   const [, setLocation] = useLocation();
   const { fileBuffer, settings, updateSettings } = useReader();
   const viewerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  const [book, setBook] = useState<Book | null>(null);
   const [rendition, setRendition] = useState<Rendition | null>(null);
   const [toc, setToc] = useState<any[]>([]);
   const [progress, setProgress] = useState(0);
   const [isTocOpen, setIsTocOpen] = useState(false);
 
-  // Remember reading position across rendition re-creations (e.g. view mode switch)
+  // Persists reading position across rendition recreations (view mode switch)
   const lastCfiRef = useRef<string | null>(null);
+  // Stable ref so the resize effect doesn't trigger rendition recreation
+  const pageViewRef = useRef(settings.pageView);
+  useEffect(() => { pageViewRef.current = settings.pageView; }, [settings.pageView]);
 
-  // Redirect if no file
+  // Redirect if no file loaded
   useEffect(() => {
-    if (!fileBuffer) {
-      setLocation('/');
-    }
+    if (!fileBuffer) setLocation('/');
   }, [fileBuffer, setLocation]);
 
-  // Effect 1: Load the book (only when file changes)
+  // Create book + rendition together. Re-runs when file or page-view mode changes.
   useEffect(() => {
-    if (!fileBuffer) return;
+    if (!fileBuffer || !viewerRef.current) return;
 
-    const newBook = ePub(fileBuffer);
-    setBook(newBook);
+    const spread = pageViewRef.current === 'double' ? 'auto' : 'none';
 
-    newBook.loaded.navigation.then((nav) => {
-      setToc(nav.toc);
-    });
+    const book = ePub(fileBuffer);
 
-    return () => {
-      newBook.destroy();
-      setBook(null);
-      setRendition(null);
-    };
-  }, [fileBuffer]);
-
-  // Effect 2: Create the rendition (when book or pageView changes)
-  useEffect(() => {
-    if (!book || !viewerRef.current) return;
-
-    const spread = settings.pageView === 'double' ? 'auto' : 'none';
-
-    const newRendition = book.renderTo(viewerRef.current, {
+    const rend = book.renderTo(viewerRef.current, {
       width: '100%',
       height: '100%',
       flow: 'paginated',
-      spread: spread,
-      snap: true,
+      manager: 'default',
+      spread,
     });
 
-    setRendition(newRendition);
+    setRendition(rend);
+
+    book.loaded.navigation.then((nav) => {
+      setToc(nav.toc);
+    });
 
     book.ready.then(() => {
       const cfi = lastCfiRef.current;
-      if (cfi) {
-        newRendition.display(cfi);
-      } else {
-        newRendition.display();
-      }
-      return book.locations.generate(1600);
+      return cfi ? rend.display(cfi) : rend.display();
+    }).then(() => {
+      book.locations.generate(1600);
     });
 
-    newRendition.on('relocated', (location: Location) => {
+    rend.on('relocated', (location: Location) => {
       if (location?.start?.cfi) {
         lastCfiRef.current = location.start.cfi;
       }
       if (book.locations.length() > 0) {
-        const percentage = book.locations.percentageFromCfi(location.start.cfi);
-        setProgress(Math.round(percentage * 100));
+        const pct = book.locations.percentageFromCfi(location.start.cfi);
+        setProgress(Math.round(pct * 100));
       }
     });
 
     return () => {
-      newRendition.destroy();
+      book.destroy();
       setRendition(null);
     };
+  // pageView change re-runs via the trigger state below
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [book, settings.pageView]);
+  }, [fileBuffer, settings.pageView]);
 
-  // Effect 3: Apply typography/theme settings to the rendition
+  // Apply typography + theme settings into the epub iframe
   useEffect(() => {
     if (!rendition) return;
 
-    const { theme, fontFamily, lineHeight, letterSpacing } = settings;
-
-    // Theme colors applied to the epub iframe
     const themeColors: Record<string, { bg: string; color: string }> = {
-      white: { bg: '#ffffff', color: '#1a1a1a' },
+      white: { bg: '#ffffff', color: '#1c1008' },
       sepia: { bg: '#f4ecd8', color: '#3b2a1a' },
-      dark: { bg: '#1a1a1a', color: '#e8e8e8' },
+      dark:  { bg: '#1a1a1a', color: '#e8e0d0' },
     };
-    const { bg, color } = themeColors[theme] ?? themeColors.white;
+    const { bg, color } = themeColors[settings.theme] ?? themeColors.white;
 
     rendition.themes.register('custom', {
       body: {
         background: `${bg} !important`,
         color: `${color} !important`,
-        'font-family': `${fontFamily}, Georgia, serif !important`,
-        'line-height': `${lineHeight} !important`,
-        'letter-spacing': `${letterSpacing}em !important`,
+        'font-family': `${settings.fontFamily}, Georgia, serif !important`,
+        'line-height': `${settings.lineHeight} !important`,
+        'letter-spacing': `${settings.letterSpacing}em !important`,
       },
       p: {
-        'font-family': `${fontFamily}, Georgia, serif !important`,
-        'line-height': `${lineHeight} !important`,
-        'letter-spacing': `${letterSpacing}em !important`,
+        'font-family': `${settings.fontFamily}, Georgia, serif !important`,
+        'line-height': `${settings.lineHeight} !important`,
+        'letter-spacing': `${settings.letterSpacing}em !important`,
       },
       'h1, h2, h3, h4, h5, h6': {
-        'font-family': `${fontFamily}, Georgia, serif !important`,
+        'font-family': `${settings.fontFamily}, Georgia, serif !important`,
       },
     });
 
     rendition.themes.select('custom');
-  }, [rendition, settings]);
+  }, [rendition, settings.theme, settings.fontFamily, settings.lineHeight, settings.letterSpacing]);
+
+  // When margin changes, let CSS transition finish then tell epubjs the new size
+  useEffect(() => {
+    if (!rendition || !containerRef.current) return;
+    const timer = setTimeout(() => {
+      if (containerRef.current) {
+        const w = containerRef.current.clientWidth;
+        const h = containerRef.current.clientHeight;
+        rendition.resize(w, h);
+      }
+    }, 220);
+    return () => clearTimeout(timer);
+  }, [rendition, settings.marginWidth]);
 
   const goToPrevPage = useCallback(() => rendition?.prev(), [rendition]);
   const goToNextPage = useCallback(() => rendition?.next(), [rendition]);
@@ -151,8 +148,8 @@ export default function Reader() {
 
   if (!fileBuffer) return null;
 
-  // Margin: applied as horizontal padding on the outer container (reliable, no iframe fight)
-  const marginPx = settings.marginWidth * 3; // 0–300px
+  // Margin controls the text column width: 0 = full width, 100 = ~50% width, centred
+  const textWidthPct = Math.max(40, 100 - settings.marginWidth * 0.5);
 
   return (
     <div className="h-[100dvh] w-full flex flex-col overflow-hidden bg-background transition-colors duration-300">
@@ -161,8 +158,7 @@ export default function Reader() {
       <header className="h-14 flex items-center justify-between px-4 shrink-0 border-b border-border/10">
         <div className="flex items-center gap-1">
           <Button
-            variant="ghost"
-            size="icon"
+            variant="ghost" size="icon"
             onClick={() => setLocation('/')}
             className="text-muted-foreground hover:text-foreground"
             data-testid="button-back"
@@ -173,8 +169,7 @@ export default function Reader() {
           <Sheet open={isTocOpen} onOpenChange={setIsTocOpen}>
             <SheetTrigger asChild>
               <Button
-                variant="ghost"
-                size="icon"
+                variant="ghost" size="icon"
                 className="text-muted-foreground hover:text-foreground"
                 data-testid="button-toc"
               >
@@ -208,8 +203,7 @@ export default function Reader() {
           <Popover>
             <PopoverTrigger asChild>
               <Button
-                variant="ghost"
-                size="icon"
+                variant="ghost" size="icon"
                 className="text-muted-foreground hover:text-foreground"
                 data-testid="button-settings"
               >
@@ -305,8 +299,8 @@ export default function Reader() {
 
                   <div className="space-y-2">
                     <div className="flex justify-between items-center">
-                      <Label className="text-xs text-muted-foreground">Page Margin</Label>
-                      <span className="text-xs font-mono text-muted-foreground">{settings.marginWidth}</span>
+                      <Label className="text-xs text-muted-foreground">Text Width</Label>
+                      <span className="text-xs font-mono text-muted-foreground">{Math.round(textWidthPct)}%</span>
                     </div>
                     <Slider
                       min={0} max={100} step={4}
@@ -325,11 +319,11 @@ export default function Reader() {
 
       {/* Reader Body */}
       <main className="flex-1 relative flex items-stretch overflow-hidden">
+
         {/* Nav Prev */}
-        <div className="shrink-0 w-12 sm:w-16 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity z-10">
+        <div className="shrink-0 w-10 sm:w-14 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity z-10">
           <Button
-            variant="ghost"
-            size="icon"
+            variant="ghost" size="icon"
             onClick={goToPrevPage}
             className="h-full w-full rounded-none"
             data-testid="button-prev"
@@ -338,19 +332,21 @@ export default function Reader() {
           </Button>
         </div>
 
-        {/* Viewer — margin applied here via padding */}
-        <div
-          className="flex-1 h-full transition-all duration-200"
-          style={{ paddingLeft: marginPx, paddingRight: marginPx }}
-        >
-          <div ref={viewerRef} className="w-full h-full" id="viewer" />
+        {/* Centred viewer — width controls text line length */}
+        <div className="flex-1 h-full flex items-stretch justify-center overflow-hidden">
+          <div
+            ref={containerRef}
+            className="h-full transition-[width] duration-200"
+            style={{ width: `${textWidthPct}%` }}
+          >
+            <div ref={viewerRef} className="w-full h-full" id="viewer" />
+          </div>
         </div>
 
         {/* Nav Next */}
-        <div className="shrink-0 w-12 sm:w-16 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity z-10">
+        <div className="shrink-0 w-10 sm:w-14 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity z-10">
           <Button
-            variant="ghost"
-            size="icon"
+            variant="ghost" size="icon"
             onClick={goToNextPage}
             className="h-full w-full rounded-none"
             data-testid="button-next"
@@ -360,9 +356,9 @@ export default function Reader() {
         </div>
       </main>
 
-      {/* Footer / Progress */}
+      {/* Footer */}
       <footer className="h-9 shrink-0 flex items-center justify-center text-xs text-muted-foreground font-sans border-t border-border/5">
-        <span data-testid="text-progress">{progress}% read</span>
+        <span data-testid="text-progress">{progress > 0 ? `${progress}% read` : ''}</span>
       </footer>
     </div>
   );
