@@ -1,45 +1,50 @@
-# [Project name]
+# EPUB Reader
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A web-based EPUB reader with rich typography controls, chapter navigation, and multiple reading themes.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/epub-reader run dev` — run the frontend (reads PORT env var)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Frontend: React + Vite, Tailwind CSS, shadcn/ui, wouter
+- EPUB rendering: epubjs
+- No backend — fully client-side
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/epub-reader/src/` — all frontend source
+  - `pages/home.tsx` — upload/landing screen
+  - `pages/reader.tsx` — main reader with epubjs integration
+  - `context/reader-context.tsx` — global state, settings, localStorage persistence
+  - `App.tsx` — wouter router
+  - `index.css` — theme palette (light, sepia, dark)
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- **Fully client-side**: EPUB files are read via the FileReader API as ArrayBuffer and passed directly to epubjs — no server upload needed.
+- **epubjs rendition themes**: Font, letter-spacing, line-height, and color theme are applied via `rendition.themes.override()` and `rendition.themes.select()` so they affect content inside the iframe.
+- **Settings persistence**: All reader preferences (font, spacing, margins, theme) are stored in localStorage and rehydrated on load.
+- **No backend**: No database, no API server — this is a pure frontend artifact.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Upload any EPUB file and read it in a calm, focused reading environment. Control typography (7 font choices, kerning, line spacing, margins) and choose between White, Sepia, or Dark page themes. A toggleable table of contents lets you jump between chapters instantly.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+_Populate as you build._
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- epubjs renders content in an iframe — CSS overrides must go through `rendition.themes` not regular stylesheets.
+- Google Font `@import url(...)` must be the very first line in `index.css`, before `@import "tailwindcss"`.
 
 ## Pointers
 
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- See the `pnpm-workspace` skill for workspace structure and TypeScript setup
+- epubjs docs: https://github.com/futurepress/epub.js/
