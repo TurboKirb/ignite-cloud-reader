@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useLocation } from 'wouter';
 import { useReader } from '@/lib/reader-context';
-import ePub, { Rendition, Location } from 'epubjs';
+import ePub, { Book, Rendition, Location } from 'epubjs';
 import {
   Settings2,
   List as ListIcon,
@@ -30,18 +30,17 @@ export default function Reader() {
   const viewerRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Keep book in a ref so it's accessible in callbacks without reactive deps
+  const bookRef = useRef<Book | null>(null);
   const [rendition, setRendition] = useState<Rendition | null>(null);
   const [toc, setToc] = useState<any[]>([]);
   const [progress, setProgress] = useState(0);
   const [isTocOpen, setIsTocOpen] = useState(false);
 
-  // Persists reading position across rendition recreations (view mode switch)
+  // Persists reading position across rendition recreations
   const lastCfiRef = useRef<string | null>(null);
-  // Stable ref so the resize effect doesn't trigger rendition recreation
-  const pageViewRef = useRef(settings.pageView);
-  useEffect(() => { pageViewRef.current = settings.pageView; }, [settings.pageView]);
 
-  // Redirect if no file loaded
+  // Redirect if no file
   useEffect(() => {
     if (!fileBuffer) setLocation('/');
   }, [fileBuffer, setLocation]);
@@ -50,9 +49,12 @@ export default function Reader() {
   useEffect(() => {
     if (!fileBuffer || !viewerRef.current) return;
 
-    const spread = pageViewRef.current === 'double' ? 'auto' : 'none';
+    // 'always' forces two columns regardless of container width;
+    // 'none' strictly enforces single page.
+    const spread = settings.pageView === 'double' ? 'always' : 'none';
 
     const book = ePub(fileBuffer);
+    bookRef.current = book;
 
     const rend = book.renderTo(viewerRef.current, {
       width: '100%',
@@ -87,13 +89,13 @@ export default function Reader() {
 
     return () => {
       book.destroy();
+      bookRef.current = null;
       setRendition(null);
     };
-  // pageView change re-runs via the trigger state below
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileBuffer, settings.pageView]);
 
-  // Apply typography + theme settings into the epub iframe
+  // Apply typography + theme into the epub iframe
   useEffect(() => {
     if (!rendition) return;
 
@@ -125,31 +127,49 @@ export default function Reader() {
     rendition.themes.select('custom');
   }, [rendition, settings.theme, settings.fontFamily, settings.lineHeight, settings.letterSpacing]);
 
-  // When margin changes, let CSS transition finish then tell epubjs the new size
+  // When text-width changes, let the CSS transition finish then resize epubjs
   useEffect(() => {
     if (!rendition || !containerRef.current) return;
     const timer = setTimeout(() => {
       if (containerRef.current) {
-        const w = containerRef.current.clientWidth;
-        const h = containerRef.current.clientHeight;
-        rendition.resize(w, h);
+        rendition.resize(containerRef.current.clientWidth, containerRef.current.clientHeight);
       }
-    }, 220);
+    }, 250);
     return () => clearTimeout(timer);
   }, [rendition, settings.marginWidth]);
 
   const goToPrevPage = useCallback(() => rendition?.prev(), [rendition]);
   const goToNextPage = useCallback(() => rendition?.next(), [rendition]);
 
-  const navigateToToc = (href: string) => {
-    rendition?.display(href);
+  // Navigate via TOC with multiple href resolution fallbacks.
+  // EPUBs vary in whether TOC hrefs match spine hrefs exactly,
+  // are URL-encoded, or include fragment identifiers.
+  const navigateToToc = useCallback(async (href: string) => {
+    if (!rendition) return;
     setIsTocOpen(false);
-  };
+
+    const attempts = [
+      href,
+      href.split('#')[0],
+      decodeURIComponent(href),
+      decodeURIComponent(href.split('#')[0]),
+    ];
+
+    for (const attempt of attempts) {
+      try {
+        await rendition.display(attempt);
+        return; // success
+      } catch {
+        // try next form
+      }
+    }
+  }, [rendition]);
 
   if (!fileBuffer) return null;
 
-  // Margin controls the text column width: 0 = full width, 100 = ~50% width, centred
-  const textWidthPct = Math.max(40, 100 - settings.marginWidth * 0.5);
+  // marginWidth=0 → text fills 100% of available width (widest)
+  // marginWidth=100 → text fills 40% of available width (narrowest)
+  const textWidthPct = Math.max(40, 100 - settings.marginWidth * 0.6);
 
   return (
     <div className="h-[100dvh] w-full flex flex-col overflow-hidden bg-background transition-colors duration-300">
